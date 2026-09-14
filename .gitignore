@@ -1,0 +1,6 @@
+tmp/todo.md
+__pycache__/
+*.egg-info/
+build/
+dist/
+.pytest_cache/
