@@ -20,10 +20,13 @@ from pydantic import (
 )
 
 
-HttpUrl = Annotated[
-    AnyUrl,
-    UrlConstraints(allowed_schemes=["http", "https"], max_length=8_192),
-]
+class HttpUrl(AnyUrl):
+    _constraints = UrlConstraints(
+        allowed_schemes=["http", "https"],
+        max_length=8_192,
+    )
+
+
 HttpStatusCode = Annotated[StrictInt, Field(ge=100, le=599)]
 
 
@@ -140,7 +143,7 @@ class BasicUrlInfo(_StrictSchema):
     """Structured representation of ``collect_basic_url_info`` JSON output."""
 
     schema_version: str = Field(
-        default="2609141704v1",
+        default="2609141704v2",
         description=(
             "当前 URL 信息结构的版本号，采用 {YYMMDDHHMM}v{version} 编码，方便后续升级和兼容。"
         ),

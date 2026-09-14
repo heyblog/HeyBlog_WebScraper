@@ -1,137 +1,254 @@
 from __future__ import annotations
 
-from heyblog_webscraper import RawFetchResult, collect_basic_url_info, normalize_url
+from datetime import UTC, datetime, timedelta
+from email.message import Message
+import urllib.request
+from urllib.error import HTTPError
+
+from heyblog_webscraper import BasicUrlInfo, collect_basic_url_info, normalize_url
 
 
-class StubFetcher:
-    def __init__(self, responses: dict[str, RawFetchResult]) -> None:
-        self.responses = responses
-        self.fetch_calls: list[tuple[str, float, int]] = []
-        self.probe_calls: list[tuple[str, float]] = []
+class StubResponse:
+    def __init__(
+        self,
+        url: str,
+        body: bytes = b"",
+        *,
+        read_error: Exception | None = None,
+    ) -> None:
+        self.url = url
+        self.body = body
+        self.read_error = read_error
+        self.headers = Message()
+        self.headers["Content-Type"] = "text/html; charset=utf-8"
 
-    def fetch(self, url: str, *, timeout_seconds: float, max_bytes: int, user_agent: str) -> RawFetchResult:
-        del user_agent
-        self.fetch_calls.append((url, timeout_seconds, max_bytes))
-        return self.responses[url]
+    def getcode(self) -> int:
+        return 200
 
-    def probe(self, url: str, *, timeout_seconds: float, user_agent: str) -> RawFetchResult:
-        del user_agent
-        self.probe_calls.append((url, timeout_seconds))
-        return RawFetchResult(
-            requested_url=url,
-            final_url=url,
-            status_code=404,
-            headers={"content-type": "text/html"},
-            elapsed_ms=1,
+    def geturl(self) -> str:
+        return self.url
+
+    def read(self, _size: int) -> bytes:
+        if self.read_error is not None:
+            raise self.read_error
+        return self.body
+
+    def __enter__(self) -> StubResponse:
+        return self
+
+    def __exit__(self, *_args: object) -> None:
+        return None
+
+
+class StubOpener:
+    def __init__(
+        self,
+        body: bytes = b"",
+        *,
+        error: Exception | None = None,
+        read_error: Exception | None = None,
+    ) -> None:
+        self.body = body
+        self.error = error
+        self.read_error = read_error
+        self.opened_urls: list[str] = []
+
+    def open(self, request, *, timeout: float) -> StubResponse:
+        assert timeout == 10.0
+        self.opened_urls.append(request.full_url)
+        if self.error is not None:
+            raise self.error
+        return StubResponse(
+            request.full_url,
+            self.body,
+            read_error=self.read_error,
         )
 
 
-def response(url: str, body: bytes, content_type: str, **headers: str) -> RawFetchResult:
-    return RawFetchResult(
-        requested_url=url,
-        final_url=url,
-        status_code=200,
-        headers={"content-type": content_type, **headers},
-        body=body,
-        elapsed_ms=2,
+def install_stub_opener(
+    monkeypatch,
+    body: bytes = b"",
+    *,
+    error: Exception | None = None,
+    read_error: Exception | None = None,
+) -> StubOpener:
+    opener = StubOpener(body, error=error, read_error=read_error)
+    monkeypatch.setattr(
+        urllib.request,
+        "build_opener",
+        lambda _handler: opener,
     )
+    return opener
 
 
-def test_basic_collection_uses_fixed_scope_and_collects_icon_and_timing() -> None:
-    home_url = "https://example.com/"
-    feed_url = "https://example.com/feed.xml"
-    about_url = "https://example.com/about"
-    icon_url = "https://example.com/icon.png"
-    home = b"""<html><head>
-      <meta property="og:title" content="Example Blog">
-      <meta name="description" content="A concise description">
-      <meta name="generator" content="WordPress 6.8">
-      <link rel="alternate" type="application/atom+xml" href="/feed.xml">
-      <link rel="icon" href="/icon.png">
-    </head><body><a href="/about">About</a><main>secret page text</main></body></html>"""
-    feed = b"<feed xmlns='http://www.w3.org/2005/Atom'><title>Feed</title></feed>"
-    about = b"<html><head><title>About us</title><meta name='description' content='Who we are'></head></html>"
-    icon = b"\x89PNG\r\n\x1a\n"
-    fetcher = StubFetcher(
+def test_collect_basic_url_info_returns_validated_model(monkeypatch) -> None:
+    install_stub_opener(monkeypatch)
+
+    result = collect_basic_url_info("HTTPS://Example.COM:443")
+
+    assert isinstance(result, BasicUrlInfo)
+    assert result.raw_url == "HTTPS://Example.COM:443"
+    assert str(result.normalized_url) == "https://example.com/"
+    assert [str(url) for url in result.redirect_chain] == ["https://example.com/"]
+    assert result.website_info.feeds == []
+
+
+def test_collect_basic_url_info_records_utc_fetch_time(monkeypatch) -> None:
+    install_stub_opener(monkeypatch)
+    before = datetime.now(UTC)
+
+    result = collect_basic_url_info("https://example.com")
+
+    after = datetime.now(UTC)
+    assert result.fetched_at is not None
+    assert result.fetched_at.utcoffset() == timedelta(0)
+    assert before <= result.fetched_at <= after
+
+
+def test_collect_basic_url_info_serializes_to_the_existing_payload(monkeypatch) -> None:
+    install_stub_opener(monkeypatch)
+
+    result = collect_basic_url_info("https://example.com")
+    payload = result.model_dump(mode="json")
+    serialized_fetched_at = payload.pop("fetched_at")
+
+    assert isinstance(serialized_fetched_at, str)
+    assert datetime.fromisoformat(
+        serialized_fetched_at.replace("Z", "+00:00")
+    ) == result.fetched_at
+    assert payload == {
+        "schema_version": "2609141704v2",
+        "status_code": 200,
+        "raw_url": "https://example.com",
+        "normalized_url": "https://example.com/",
+        "final_url": "https://example.com/",
+        "redirect_chain": ["https://example.com/"],
+        "website_info": {
+            "title": None,
+            "description": None,
+            "icon": {},
+            "feeds": [],
+        },
+        "errors": [],
+    }
+
+
+def test_collect_basic_url_info_discovers_and_normalizes_feed_links(monkeypatch) -> None:
+    page = b"""<html><head>
+      <link rel="alternate" type="application/rss+xml" href="/feed.xml"
+            title="  Example   RSS  ">
+      <link rel="alternate" type="application/atom+xml"
+            href="https://feeds.example.com/atom.xml">
+      <link rel="feed" type="application/feed+json" href="feed.json">
+      <link rel="alternate" type="application/rss+xml"
+            href="https://example.com/feed.xml" title="Duplicate">
+      <link rel="alternate" type="text/html" href="/archive">
+      <link rel="stylesheet" type="application/rss+xml" href="/style.xml">
+      <link rel="icon" type="image/png" href="javascript:alert(2)">
+      <link rel="alternate" type="application/rss+xml" href="javascript:alert(1)">
+    </head></html>"""
+    opener = install_stub_opener(monkeypatch, page)
+
+    result = collect_basic_url_info("https://example.com/blog/")
+
+    assert [feed.model_dump(mode="json") for feed in result.website_info.feeds] == [
         {
-            home_url: response(home_url, home, "text/html; charset=utf-8", server="nginx"),
-            feed_url: response(feed_url, feed, "application/atom+xml; charset=utf-8"),
-            about_url: response(about_url, about, "text/html; charset=utf-8"),
-            icon_url: response(icon_url, icon, "image/png"),
-        }
-    )
-
-    result = collect_basic_url_info("HTTPS://Example.COM:443", fetcher=fetcher)
-
-    assert result.info.requested_url == home_url
-    assert result.info.page is not None
-    assert len(result.info.page.visible_text) == 1
-    assert result.info.page.metadata == {}
-    assert result.info.page.raw_html is None
-    assert result.info.articles == []
-    assert result.info.feeds[0].url == feed_url
-    assert result.info.related_pages[0].url == about_url
-    assert result.icon is not None
-    assert result.icon.source_url == icon_url
-    assert result.icon.media_type == "image/png"
-    assert result.icon.byte_size == len(icon)
-    assert result.timing.request_count == 9
-    assert result.timing.response_bytes == len(home) + len(feed) + len(about) + len(icon)
-    assert result.timing.budget_exhausted is False
-    assert all(timeout <= 4 for _, timeout, _ in fetcher.fetch_calls)
-    assert fetcher.fetch_calls[0][2] == 1_048_576
-    assert fetcher.fetch_calls[2][2] == 131_072
-    assert fetcher.fetch_calls[3][2] == 1_048_576
-
-
-def test_basic_collection_attempts_at_most_three_feed_candidates() -> None:
-    home_url = "https://example.com/"
-    home = b"<html><head><title>Example</title></head></html>"
-    responses = {home_url: response(home_url, home, "text/html")}
-    responses[home_url].truncated = True
-    for path in ("feed", "feed/", "rss"):
-        url = f"https://example.com/{path}"
-        responses[url] = RawFetchResult(
-            requested_url=url,
-            final_url=url,
-            status_code=404,
-            headers={"content-type": "text/html"},
-        )
-    responses["https://example.com/favicon.ico"] = RawFetchResult(
-        requested_url="https://example.com/favicon.ico",
-        final_url="https://example.com/favicon.ico",
-        status_code=404,
-        headers={"content-type": "image/x-icon"},
-    )
-    fetcher = StubFetcher(responses)
-
-    result = collect_basic_url_info(home_url, fetcher=fetcher)
-
-    ignored = {home_url, "https://example.com/favicon.ico"}
-    feed_fetches = [url for url, _, _ in fetcher.fetch_calls if url not in ignored]
-    assert feed_fetches == [
-        "https://example.com/feed",
-        "https://example.com/feed/",
-        "https://example.com/rss",
+            "url": "https://example.com/feed.xml",
+            "format": "rss",
+            "title": "Example RSS",
+        },
+        {
+            "url": "https://feeds.example.com/atom.xml",
+            "format": "atom",
+            "title": None,
+        },
+        {
+            "url": "https://example.com/blog/feed.json",
+            "format": "json",
+            "title": None,
+        },
     ]
-    assert len(result.info.feeds) == 3
-    assert result.info.status == "partial"
-    assert any(error.stage == "home" and error.code == "too_large" for error in result.info.errors)
+    assert result.website_info.icon.model_dump(mode="json") == {}
+    assert [error.stage for error in result.errors] == ["icon", "feed"]
+    assert all(error.retryable is False for error in result.errors)
+    assert opener.opened_urls == ["https://example.com/blog/"]
 
 
-def test_basic_collection_marks_an_exhausted_total_budget(monkeypatch) -> None:
+def test_collect_basic_url_info_returns_structured_http_error(monkeypatch) -> None:
+    url = "https://example.com/"
+    http_error = HTTPError(
+        url,
+        503,
+        "Service Unavailable",
+        Message(),
+        None,
+    )
+    install_stub_opener(monkeypatch, error=http_error)
+
+    result = collect_basic_url_info(url)
+
+    assert result.status_code == 503
+    assert str(result.final_url) == url
+    assert result.website_info.title is None
+    assert len(result.errors) == 1
+    assert result.errors[0].stage == "request"
+    assert result.errors[0].url == url
+    assert "503" in result.errors[0].message
+    assert result.errors[0].retryable is True
+
+
+def test_collect_basic_url_info_returns_structured_timeout(monkeypatch) -> None:
+    install_stub_opener(monkeypatch, error=TimeoutError("request timed out"))
+
+    result = collect_basic_url_info("https://example.com")
+
+    assert result.status_code is None
+    assert result.final_url is None
+    assert result.redirect_chain == [result.normalized_url]
+    assert result.errors[0].model_dump() == {
+        "stage": "request",
+        "url": "https://example.com/",
+        "message": "request timed out",
+        "retryable": True,
+    }
+
+
+def test_response_read_failure_preserves_status_and_final_url(monkeypatch) -> None:
+    install_stub_opener(monkeypatch, read_error=OSError("connection reset"))
+
+    result = collect_basic_url_info("https://example.com")
+
+    assert result.status_code == 200
+    assert str(result.final_url) == "https://example.com/"
+    assert result.website_info.feeds == []
+    assert result.errors[0].stage == "request"
+    assert result.errors[0].retryable is True
+
+
+def test_metadata_failure_preserves_already_parsed_fields(
+    monkeypatch,
+) -> None:
     from heyblog_webscraper.collector import basic
 
-    fetcher = StubFetcher({})
-    monkeypatch.setattr(basic, "_TOTAL_TIMEOUT_SECONDS", 0)
+    page = b"""<html><head>
+      <title>Partial result</title>
+      <link rel="alternate" type="application/rss+xml" href="/feed.xml">
+    </head></html>"""
+    install_stub_opener(monkeypatch, page)
+    original_feed = basic.MetadataParser.feed
 
-    result = collect_basic_url_info("https://example.com/", fetcher=fetcher)
+    def parse_then_fail(parser, html: str) -> None:
+        original_feed(parser, html)
+        raise RuntimeError("parser failed after collecting metadata")
 
-    assert result.info.status == "failed"
-    assert result.timing.budget_exhausted is True
-    assert result.timing.request_count == 0
-    assert [error.stage for error in result.info.errors] == ["home", "budget"]
-    assert fetcher.fetch_calls == []
+    monkeypatch.setattr(basic.MetadataParser, "feed", parse_then_fail)
+
+    result = collect_basic_url_info("https://example.com")
+
+    assert result.website_info.title == "Partial result"
+    assert str(result.website_info.feeds[0].url) == "https://example.com/feed.xml"
+    assert result.errors[0].stage == "metadata"
+    assert result.errors[0].retryable is False
 
 
 def test_normalize_url_removes_duplicate_path_separators() -> None:
