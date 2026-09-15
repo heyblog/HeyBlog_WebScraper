@@ -143,9 +143,9 @@ class BasicUrlInfo(_StrictSchema):
     """Structured representation of ``collect_basic_url_info`` JSON output."""
 
     schema_version: str = Field(
-        default="2609141704v2",
+        default="2609151143",
         description=(
-            "当前 URL 信息结构的版本号，采用 {YYMMDDHHMM}v{version} 编码，方便后续升级和兼容。"
+            "当前 URL 信息结构的版本号，采用 {YYMMDDHHMM}编码，方便后续升级和兼容。"
         ),
     )
 
@@ -179,6 +179,12 @@ class BasicUrlInfo(_StrictSchema):
         min_length=1,
         max_length=50,
         description="请求经历的重定向 URL 链；默认仅包含 normalized_url。",
+    )
+
+    elapsed_ms: StrictInt = Field(
+        default=0,
+        ge=0,
+        description="本次基础 URL 信息采集的完整执行时间，单位为毫秒。",
     )
 
     fetched_at: datetime | None = Field(

@@ -2,8 +2,15 @@
 
 from __future__ import annotations
 
+from time import perf_counter_ns
+
 from ..net import MetadataParser, normalize_url
 from ..schemas import BasicUrlInfo, CollectionError, FeedInfo
+from datetime import UTC, datetime
+from mimetypes import guess_type
+from urllib.error import HTTPError, URLError
+from urllib.parse import urljoin
+from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 
 def collect_basic_url_info(
@@ -11,11 +18,7 @@ def collect_basic_url_info(
 ) -> BasicUrlInfo:
     """Collect basic website information and return a validated result model."""
 
-    from datetime import UTC, datetime
-    from mimetypes import guess_type
-    from urllib.error import HTTPError, URLError
-    from urllib.parse import urljoin
-    from urllib.request import HTTPRedirectHandler, Request, build_opener
+    started_ns = perf_counter_ns()
 
     # 1. 规范化输入 URL，并创建字段完整的基础结果。
     normalized_url = normalize_url(url)
@@ -231,8 +234,9 @@ def collect_basic_url_info(
         for stage, error_url, error, retryable in stage_failures
     ]
 
-    # 6. 写入 UTC 采集时间，返回经过 Pydantic 校验的 BasicUrlInfo。
+    # 6. 写入 UTC 采集时间和完整调用耗时，返回经过 Pydantic 校验的结果。
     result.fetched_at = datetime.now(UTC)
+    result.elapsed_ms = max(0, (perf_counter_ns() - started_ns) // 1_000_000)
 
     return result
 

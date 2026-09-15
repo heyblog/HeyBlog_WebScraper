@@ -2,10 +2,17 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from email.message import Message
+from pathlib import Path
 import urllib.request
 from urllib.error import HTTPError
 
 from heyblog_webscraper import BasicUrlInfo, collect_basic_url_info, normalize_url
+
+
+def test_package_is_loaded_directly_from_src() -> None:
+    package_root = Path(__file__).resolve().parents[1]
+    assert (package_root / "src/__init__.py").is_file()
+    assert not (package_root / "src/heyblog_webscraper").exists()
 
 
 class StubResponse:
@@ -105,6 +112,19 @@ def test_collect_basic_url_info_records_utc_fetch_time(monkeypatch) -> None:
     assert before <= result.fetched_at <= after
 
 
+def test_collect_basic_url_info_records_total_elapsed_milliseconds(monkeypatch) -> None:
+    from heyblog_webscraper.collector import basic
+
+    install_stub_opener(monkeypatch)
+    readings = iter((1_000_000_000, 1_123_999_999))
+    monkeypatch.setattr(basic, "perf_counter_ns", lambda: next(readings))
+
+    result = collect_basic_url_info("https://example.com")
+
+    assert result.elapsed_ms == 123
+    assert result.model_dump(mode="json")["elapsed_ms"] == 123
+
+
 def test_collect_basic_url_info_serializes_to_the_existing_payload(monkeypatch) -> None:
     install_stub_opener(monkeypatch)
 
@@ -117,12 +137,13 @@ def test_collect_basic_url_info_serializes_to_the_existing_payload(monkeypatch) 
         serialized_fetched_at.replace("Z", "+00:00")
     ) == result.fetched_at
     assert payload == {
-        "schema_version": "2609141704v2",
+        "schema_version": "2609151143",
         "status_code": 200,
         "raw_url": "https://example.com",
         "normalized_url": "https://example.com/",
         "final_url": "https://example.com/",
         "redirect_chain": ["https://example.com/"],
+        "elapsed_ms": result.elapsed_ms,
         "website_info": {
             "title": None,
             "description": None,

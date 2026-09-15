@@ -15,11 +15,12 @@ dependencies = [
 dev = ["pytest>=8.3,<9"]
 
 [tool.setuptools]
-package-dir = { "" = "src" }
-
-[tool.setuptools.packages.find]
-where = ["src"]
+packages = [
+  "heyblog_webscraper",
+  "heyblog_webscraper.collector",
+  "heyblog_webscraper.net",
+]
+package-dir = { heyblog_webscraper = "src" }
 
 [tool.pytest.ini_options]
-pythonpath = ["src"]
 testpaths = ["tests"]

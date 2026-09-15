@@ -19,6 +19,9 @@ heyblog-webscraper = { path = "../HeyBlog_WebScraper", editable = true }
 
 单独开发时：`uv sync`（含 `--extra dev` 获取 pytest）。
 
+包源码直接位于 `src/`；构建配置会将该目录映射为 Python 包
+`heyblog_webscraper`，调用方的导入方式不变。
+
 ## 快速上手
 
 ```python
